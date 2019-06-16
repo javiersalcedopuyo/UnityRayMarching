@@ -1,0 +1,220 @@
+﻿#pragma kernel CSMain
+#include "./inc/SignedDistanceFunctions.cginc"
+
+static const float MAX_DST = 80;
+static const float EPSILON = 0.001;
+static const float SHADOW_BIAS = EPSILON * 50;
+static const float AMBIENT_LIGHT_INTENSITY  = .2; // Min shadow intensity
+static const float LIGHT_ATTENUATION_BY_DISTANCE = 200;
+
+struct Ray
+{
+    float3 origin;
+    float3 direction;
+};
+
+struct Shape
+{
+    int     shapeType;
+    int     blendType;
+    float   blendStrength;
+    float3  position;
+    float3  scale;
+    float3  rotation;
+    float4  color;
+};
+
+int       _numShapes;
+float3    _lightDir;
+float4x4  _Camera2WorldMatrix;
+float4x4  _InverseProjectionMatrix;
+// TODO: Add different kind of lights
+// TODO: Add color ambient light
+
+StructuredBuffer<Shape> _shapes;
+RWTexture2D<float4>     _outTex;
+Texture2D<float4>       _srcTex;  
+
+// Polynomial smooth min from https://www.iquilezles.org/www/articles/smin/smin.htm
+float4 Blend( float a, float b,
+              float3 colA, float3 colB,
+              float k=0.1 )
+{
+    float h = clamp( 0.5+0.5*(b-a)/k, 0.0, 1.0 );
+    float blendDst = lerp(b, a, h) - k*h*(1.0-h);
+    float3 blendCol = lerp(colB, colA, h);
+    return float4(blendCol, blendDst);
+}
+
+float2 GetPixelCoords(uint2 id)
+{
+    uint w,h;
+    _outTex.GetDimensions(w,h);
+    return id / float2(w,h) * 2 - 1;
+}
+
+Ray GetCameraRay(float2 pixelCoords)
+{
+    Ray o;
+    o.origin       = mul(_Camera2WorldMatrix, float4(0,0,0,1)).xyz; // The CoP of the camera
+    float3 fragPos = mul(_InverseProjectionMatrix, float4(pixelCoords,0,1)).xyz; // Frag's camera coords
+    o.direction    = normalize( mul(_Camera2WorldMatrix, float4(fragPos,0)).xyz );
+
+    return o;
+}
+
+float GetShapeDistance(Shape shape, float3 eye)
+{
+  switch(shape.shapeType) {
+    case 0:
+      return CubeDistance(eye, shape.position, shape.scale);
+      break;
+    case 1:
+      return SphereDistance(eye, shape.position, shape.scale.x);
+      break;
+    case 2:
+      return TorusDistance(eye, shape.position, shape.scale.x, shape.scale.y);
+      break;
+    // TODO: Add more shapes
+    default:
+      return MAX_DST;
+      break;
+  }
+}
+
+// Gets the color and distance of the first point seen from the point of view
+float4 GetColorAndDistance(float3 pointOfView)
+{
+    float  shapeDst, outDst = MAX_DST;
+    float3 outColor = 1;
+    float4 output = float4(outColor, outDst);
+    Shape s;
+
+    for (int i=0; i<_numShapes; i++)
+    {
+        s = _shapes[i];
+
+        shapeDst = GetShapeDistance(s, pointOfView);
+
+        switch (s.blendType)
+        {
+            case 0: // Default raymarching render
+                if (shapeDst < outDst) output = float4(s.color.rgb, shapeDst); // min(a,b)
+                break;
+            case 1: // Blend
+                output = Blend(outDst, shapeDst, outColor, s.color.rgb, s.blendStrength);
+                break;
+            case 2: // Cut
+                if (-shapeDst > outDst) output = float4(s.color.rgb, -shapeDst); // max(a,-b)
+                break;
+            case 3: // Mask
+                if (shapeDst > outDst) output = float4(s.color.rgb, shapeDst); // max(a,b)
+                break;
+            default: break;
+        }
+
+        outColor = output.rgb;
+        outDst   = output.w;
+    }
+
+    return output;
+}
+
+// Estimates the normal of a surface point
+float3 ComputeNormal(float3 surfacePoint)
+{
+    // To estimate the normal in an axis, from a surface point, we move slightly back and forth in
+    // that axis and get the changing in the distance to the surface itself.
+    // If the change is 0 or really small it means the surface doesn't change in that direction, so
+    // its normal in that point won't have that axis component.
+    float3 normal;
+    float3 epsilonX = float3(EPSILON,0,0);
+    float3 epsilonY = float3(0,EPSILON,0);
+    float3 epsilonZ = float3(0,0,EPSILON);
+
+    normal.x = GetColorAndDistance(surfacePoint+epsilonX).w - GetColorAndDistance(surfacePoint-epsilonX).w;
+    normal.y = GetColorAndDistance(surfacePoint+epsilonY).w - GetColorAndDistance(surfacePoint-epsilonY).w;
+    normal.z = GetColorAndDistance(surfacePoint+epsilonZ).w - GetColorAndDistance(surfacePoint-epsilonZ).w;
+
+    return normalize(normal);
+}
+
+float ComputeShadow(float3 surfacePoint, float3 normal)
+{
+    float  dst               = 0;
+    float  lightContribution = 1;
+    float3 dirToLight        = -_lightDir;
+    float3 offsetPos         = surfacePoint + SHADOW_BIAS*normal;
+
+    float4 nextStep;
+    // Ray to the light
+    Ray ray;
+    ray.origin    = offsetPos;
+    ray.direction = dirToLight;
+
+    // Raymarch again to find occluders
+    while(dst < MAX_DST)
+    {
+        nextStep = GetColorAndDistance(ray.origin);
+
+        // If we collide with an object, the point is occluded
+        if (nextStep.w <= EPSILON) return AMBIENT_LIGHT_INTENSITY;
+
+        //lightContribution = min(lightContribution, nextStep.w * LIGHT_ATTENUATION_BY_DISTANCE);
+
+        ray.origin += ray.direction * nextStep.w;
+        dst += nextStep.w;
+    }
+
+    return AMBIENT_LIGHT_INTENSITY + (1-AMBIENT_LIGHT_INTENSITY)*lightContribution;    
+}
+
+// Lights a surface point
+void DoTheLighting(float2 px, float3 surfacePoint, float3 baseColor)
+{
+    float4 finalColor = float4(baseColor, 1);
+
+    float3 normal = ComputeNormal(surfacePoint);
+    finalColor = float4(normal,1);
+
+    // Simple diffuse lighting (TODO: Improve lighting model)    
+    finalColor *= saturate(dot(normal, -_lightDir));
+
+    // Shadows
+    finalColor *= ComputeShadow(surfacePoint, normal);
+
+    _outTex[px] = finalColor;
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // By default, the output is the same as the input
+    _outTex[id.xy] = _srcTex[id.xy];
+
+    // Get the current thread's framgment in pixel coordinates
+    float2 pixelCoords = GetPixelCoords(id.xy);
+
+    // Get the ray that goes from the camera, through the fragment
+    Ray ray = GetCameraRay(pixelCoords);
+
+    float  rayDst = 0;
+    float4 nextStepData; // (R,G,B,Distance)
+
+    while (rayDst < MAX_DST)
+    {
+        nextStepData = GetColorAndDistance(ray.origin);
+
+        // If the distance to the next point is less than our threshold, we have reached a surface
+        if (nextStepData.w < EPSILON)
+        {
+            float3 surfacePoint = ray.origin + ray.direction * nextStepData.w;
+            DoTheLighting(id.xy, surfacePoint, nextStepData.rgb);
+            //_outTex[id.xy] = float4(rayDst*0.075,0,0,1);
+            break;
+        }
+
+        ray.origin += ray.direction * nextStepData.w;
+        rayDst += nextStepData.w;
+    }
+}
