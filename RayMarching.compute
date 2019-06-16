@@ -24,6 +24,7 @@ struct Shape
     float4  color;
 };
 
+int       _paintNormals;
 int       _numShapes;
 float3    _lightDir;
 float4x4  _Camera2WorldMatrix;
@@ -65,21 +66,22 @@ Ray GetCameraRay(float2 pixelCoords)
 
 float GetShapeDistance(Shape shape, float3 eye)
 {
-  switch(shape.shapeType) {
-    case 0:
-      return CubeDistance(eye, shape.position, shape.scale);
-      break;
-    case 1:
-      return SphereDistance(eye, shape.position, shape.scale.x);
-      break;
-    case 2:
-      return TorusDistance(eye, shape.position, shape.scale.x, shape.scale.y);
-      break;
-    // TODO: Add more shapes
-    default:
-      return MAX_DST;
-      break;
-  }
+    // TODO: Add rotation support
+    switch(shape.shapeType) {
+        case 0:
+            return CubeDistance(eye, shape.position, shape.scale);
+            break;
+        case 1:
+            return SphereDistance(eye, shape.position, shape.scale.x);
+            break;
+        case 2:
+            return TorusDistance(eye, shape.position, shape.scale.x, shape.scale.y);
+            break;
+        // TODO: Add more shapes
+        default:
+            return MAX_DST;
+            break;
+    }
 }
 
 // Gets the color and distance of the first point seen from the point of view
@@ -160,8 +162,6 @@ float ComputeShadow(float3 surfacePoint, float3 normal)
         // If we collide with an object, the point is occluded
         if (nextStep.w <= EPSILON) return AMBIENT_LIGHT_INTENSITY;
 
-        //lightContribution = min(lightContribution, nextStep.w * LIGHT_ATTENUATION_BY_DISTANCE);
-
         ray.origin += ray.direction * nextStep.w;
         dst += nextStep.w;
     }
@@ -175,7 +175,7 @@ void DoTheLighting(float2 px, float3 surfacePoint, float3 baseColor)
     float4 finalColor = float4(baseColor, 1);
 
     float3 normal = ComputeNormal(surfacePoint);
-    finalColor = float4(normal,1);
+    if (_paintNormals == 1) finalColor = float4(normal,1);
 
     // Simple diffuse lighting (TODO: Improve lighting model)    
     finalColor *= saturate(dot(normal, -_lightDir));
@@ -210,7 +210,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         {
             float3 surfacePoint = ray.origin + ray.direction * nextStepData.w;
             DoTheLighting(id.xy, surfacePoint, nextStepData.rgb);
-            //_outTex[id.xy] = float4(rayDst*0.075,0,0,1);
             break;
         }
 

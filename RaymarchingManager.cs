@@ -2,8 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-[ExecuteInEditMode, ImageEffectAllowedInSceneView,
-RequireComponent(typeof(ComputeShader)), RequireComponent(typeof(Light))]
+[ExecuteInEditMode, ImageEffectAllowedInSceneView, RequireComponent(typeof(Light))]
 public class RaymarchingManager : MonoBehaviour
 {
   struct ShapeDataStruct
@@ -19,6 +18,7 @@ public class RaymarchingManager : MonoBehaviour
     public static int GetBytes() { return sizeof(float)*(1 + 3*3 + 4) + sizeof(int)*2; }
   }
 
+  [SerializeField] private bool          m_paintNormals = false;
   [SerializeField] private Light         m_mainLight;
   [SerializeField] private ComputeShader m_raymarchingShader;
 
@@ -34,7 +34,6 @@ public class RaymarchingManager : MonoBehaviour
     CleanOrCreateRenderTexture();
 
     m_shapes = new List<RayMarchingShape>( FindObjectsOfType<RayMarchingShape>() );
-    Debug.Log(m_shapes.Count + " shapes found");
     if (m_shapes.Count > 0)
     {
       // Convert shapes into structs and then to a compute buffer
@@ -117,5 +116,7 @@ public class RaymarchingManager : MonoBehaviour
 
     // Set light(s) NOTE: For now, just directional light(s)
     m_raymarchingShader.SetVector("_lightDir", m_mainLight.transform.forward);
+    
+    m_raymarchingShader.SetInt("_paintNormals", (m_paintNormals) ? 1:0);
   }
 }
