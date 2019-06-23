@@ -1,4 +1,8 @@
-﻿#pragma kernel CSMain
+﻿// This source code is distributed under the terms of the Bad Code License.
+// You are forbidden from distributing software containing this code to end users,
+// because it is bad.
+
+#pragma kernel CSMain
 #include "./inc/SignedDistanceFunctions.cginc"
 
 static const float MAX_DST = 80;
