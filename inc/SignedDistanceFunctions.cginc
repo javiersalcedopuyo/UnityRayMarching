@@ -1,18 +1,25 @@
-// Distance functions from http://iquilezles.org/www/articles/distfunctions/distfunctions.htm
-float SphereDistance(float3 eye, float3 centre, float r) { return distance(eye, centre) - r; }
-
-float CubeDistance(float3 eye, float3 centre, float3 size)
+// Following distance functions from http://iquilezles.org/www/articles/distfunctions/distfunctions.htm
+float SphereDistance(float3 eye, float3 centre, float4x4 invTR, float s)
 {
-  float3 o = abs(eye-centre) -size;
+    return distance( mul(invTR,float4(eye,1)), float4(centre,1) ) - s;
+}
+
+float CubeDistance(float3 eye, float3 centre, float4x4 invTR, float3 s)
+{
+  float4 p = mul( invTR, float4(eye,1));
+  float3 o = abs(p.xyz-centre) - s;
   float ud = length(max(o,0));
   float n = max(max(min(o.x,0),min(o.y,0)), min(o.z,0));
   return ud+n;
 }
 
-float TorusDistance(float3 eye, float3 centre, float r1, float r2)
+float TorusDistance(float3 eye, float3 centre, float r1, float r2, float4x4 invTR)
 {
-    float2 q = float2( length((eye-centre).xz)-r1, eye.y-centre.y );
-    return length(q)-r2;
+    float o = 0;
+    float4 p = mul( invTR, float4(eye,1) );
+    float2 q = float2( length((p.xyz-centre).xz)-r1, p.xyz.y-centre.y );
+    o = length(q)-r2;
+    return o;
 }
 
 float PrismDistance(float3 eye, float3 centre, float2 h)

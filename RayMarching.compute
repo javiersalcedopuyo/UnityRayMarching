@@ -1,15 +1,10 @@
-﻿// This source code is distributed under the terms of the Bad Code License.
-// You are forbidden from distributing software containing this code to end users,
-// because it is bad.
-
-#pragma kernel CSMain
+﻿#pragma kernel CSMain
 #include "./inc/SignedDistanceFunctions.cginc"
 
-static const float MAX_DST = 80;
-static const float EPSILON = 0.001;
-static const float SHADOW_BIAS = EPSILON * 50;
-static const float AMBIENT_LIGHT_INTENSITY  = .2; // Min shadow intensity
-static const float LIGHT_ATTENUATION_BY_DISTANCE = 200;
+static const int   MAX_ITERATIONS = 100;
+static const float MAX_DST        = 50;
+static const float EPSILON        = 0.001;
+static const float SHADOW_BIAS    = EPSILON * 50;
 
 struct Ray
 {
@@ -17,28 +12,40 @@ struct Ray
     float3 direction;
 };
 
+struct LightData
+{
+    float  range;
+    float  angle;
+    float  intensity;
+    float3 dir;
+    float3 pos;
+    float4 color;
+};
+
 struct Shape
 {
-    int     shapeType;
-    int     blendType;
-    float   blendStrength;
-    float3  position;
-    float3  scale;
-    float3  rotation;
-    float4  color;
+    int      shapeType;
+    int      blendType;
+    float    blendStrength;
+    float2   torusR1R2;
+    float3   scale;
+    float4   color;
+    float4x4 invTR;
 };
 
 int       _paintNormals;
 int       _numShapes;
-float3    _lightDir;
+int       _numLights;
+float     _Ka;  // Ambient light intensity
+float     _Ksh; // Soft shadows coeficient
+float4    _ambientColor;
 float4x4  _Camera2WorldMatrix;
 float4x4  _InverseProjectionMatrix;
-// TODO: Add different kind of lights
-// TODO: Add color ambient light
 
-StructuredBuffer<Shape> _shapes;
-RWTexture2D<float4>     _outTex;
-Texture2D<float4>       _srcTex;  
+StructuredBuffer<LightData> _lights;
+StructuredBuffer<Shape>     _shapes;
+RWTexture2D<float4>         _outTex;
+Texture2D<float4>           _srcTex;  
 
 // Polynomial smooth min from https://www.iquilezles.org/www/articles/smin/smin.htm
 float4 Blend( float a, float b,
@@ -70,26 +77,25 @@ Ray GetCameraRay(float2 pixelCoords)
 
 float GetShapeDistance(Shape shape, float3 eye)
 {
-    // TODO: Add rotation support
-    switch(shape.shapeType) {
-        case 0:
-            return CubeDistance(eye, shape.position, shape.scale);
-            break;
-        case 1:
-            return SphereDistance(eye, shape.position, shape.scale.x);
-            break;
-        case 2:
-            return TorusDistance(eye, shape.position, shape.scale.x, shape.scale.y);
-            break;
-        // TODO: Add more shapes
-        default:
-            return MAX_DST;
-            break;
-    }
+  switch(shape.shapeType) {
+    case 0:
+      return CubeDistance(eye, shape.invTR[3].xyz, shape.invTR, shape.scale);
+      break;
+    case 1:
+      return SphereDistance(eye, shape.invTR[3].xyz, shape.invTR, shape.scale.x);
+      break;
+    case 2:
+    return TorusDistance(eye, shape.invTR[3].xyz, shape.torusR1R2.x, shape.torusR1R2.y, shape.invTR);
+      break;
+    // TODO: Add more shapes
+    default:
+      return MAX_DST;
+      break;
+  }
 }
 
 // Gets the color and distance of the first point seen from the point of view
-float4 GetColorAndDistance(float3 pointOfView)
+float4 GetColorAndRadius(float3 pointOfView)
 {
     float  shapeDst, outDst = MAX_DST;
     float3 outColor = 1;
@@ -138,56 +144,70 @@ float3 ComputeNormal(float3 surfacePoint)
     float3 epsilonY = float3(0,EPSILON,0);
     float3 epsilonZ = float3(0,0,EPSILON);
 
-    normal.x = GetColorAndDistance(surfacePoint+epsilonX).w - GetColorAndDistance(surfacePoint-epsilonX).w;
-    normal.y = GetColorAndDistance(surfacePoint+epsilonY).w - GetColorAndDistance(surfacePoint-epsilonY).w;
-    normal.z = GetColorAndDistance(surfacePoint+epsilonZ).w - GetColorAndDistance(surfacePoint-epsilonZ).w;
+    normal.x = GetColorAndRadius(surfacePoint+epsilonX).w - GetColorAndRadius(surfacePoint-epsilonX).w;
+    normal.y = GetColorAndRadius(surfacePoint+epsilonY).w - GetColorAndRadius(surfacePoint-epsilonY).w;
+    normal.z = GetColorAndRadius(surfacePoint+epsilonZ).w - GetColorAndRadius(surfacePoint-epsilonZ).w;
 
     return normalize(normal);
 }
 
-float ComputeShadow(float3 surfacePoint, float3 normal)
+float ComputeShadow(float3 dirToLight, float3 surfacePoint, float3 normal)
 {
-    float  dst               = 0;
-    float  lightContribution = 1;
-    float3 dirToLight        = -_lightDir;
-    float3 offsetPos         = surfacePoint + SHADOW_BIAS*normal;
+    if (dot(normal, dirToLight)<0) return 0;
 
-    float4 nextStep;
-    // Ray to the light
-    Ray ray;
-    ray.origin    = offsetPos;
-    ray.direction = dirToLight;
-
-    // Raymarch again to find occluders
-    while(dst < MAX_DST)
+    float dst = SHADOW_BIAS;
+    while (dst<MAX_DST)
     {
-        nextStep = GetColorAndDistance(ray.origin);
-
-        // If we collide with an object, the point is occluded
-        if (nextStep.w <= EPSILON) return AMBIENT_LIGHT_INTENSITY;
-
-        ray.origin += ray.direction * nextStep.w;
-        dst += nextStep.w;
+        float radius = GetColorAndRadius(surfacePoint + dirToLight*dst).w;
+        if (radius <= EPSILON) return _Ka;
+        
+        dst += radius;
     }
-
-    return AMBIENT_LIGHT_INTENSITY + (1-AMBIENT_LIGHT_INTENSITY)*lightContribution;    
+    return 1.0;
 }
 
 // Lights a surface point
-void DoTheLighting(float2 px, float3 surfacePoint, float3 baseColor)
+float4 DoTheLighting(float3 surfacePoint, float3 baseColor)
 {
-    float4 finalColor = float4(baseColor, 1);
+    // Ambient light
+    //float4 finalColor = _Ka * _ambientColor;
+    float4 finalColor = 0;
 
     float3 normal = ComputeNormal(surfacePoint);
-    if (_paintNormals == 1) finalColor = float4(normal,1);
+    if (_paintNormals == 1) baseColor = normal;
 
-    // Simple diffuse lighting (TODO: Improve lighting model)    
-    finalColor *= saturate(dot(normal, -_lightDir));
+    // Simple diffuse lighting (TODO: Improve lighting model)
+    float  dst2Light   = 0; 
+    float  shadow      = 1;
+    float  attByDst    = 0; 
+    float3 dirToLight  = 0;
+    for (int i=0; i< _numLights; i++)
+    {
+        if ( isinf(_lights[i].pos.x) || isinf(_lights[i].range))
+        { // Directional lights
+            dirToLight     = -_lights[i].dir;
+            dst2Light      = MAX_DST;
+            attByDst       = 0;
+        }
+        else
+        {
+            dst2Light = distance(surfacePoint, _lights[i].pos);
+            if ( dst2Light > _lights[i].range) continue;
 
-    // Shadows
-    finalColor *= ComputeShadow(surfacePoint, normal);
+            dirToLight = normalize(_lights[i].pos - surfacePoint);
+            attByDst = dst2Light/_lights[i].range; // Linear attenuation by distance // TODO: Curves?
+        }
 
-    _outTex[px] = finalColor;
+        shadow = ComputeShadow(dirToLight, surfacePoint, normal);
+
+        finalColor += _lights[i].intensity * (1-attByDst) * shadow// Intensity 
+                      * float4(baseColor,1) * _lights[i].color // Color
+                      * saturate(dot(normal, dirToLight)); 
+
+        // TODO: Add glossiness
+    }
+
+    return finalColor;
 }
 
 [numthreads(8,8,1)]
@@ -202,22 +222,26 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     // Get the ray that goes from the camera, through the fragment
     Ray ray = GetCameraRay(pixelCoords);
 
+    int    it = 0;
     float  rayDst = 0;
+    float3 surfacePoint;
+    float4 pxColor;
     float4 nextStepData; // (R,G,B,Distance)
 
-    while (rayDst < MAX_DST)
+    while (rayDst < MAX_DST && it < MAX_ITERATIONS)
     {
-        nextStepData = GetColorAndDistance(ray.origin);
+        nextStepData = GetColorAndRadius(ray.origin);
 
         // If the distance to the next point is less than our threshold, we have reached a surface
         if (nextStepData.w < EPSILON)
         {
-            float3 surfacePoint = ray.origin + ray.direction * nextStepData.w;
-            DoTheLighting(id.xy, surfacePoint, nextStepData.rgb);
+            surfacePoint = ray.origin + ray.direction * nextStepData.w;
+            pxColor = DoTheLighting(surfacePoint, nextStepData.rgb);
+            _outTex[id.xy] = pxColor;
             break;
         }
-
         ray.origin += ray.direction * nextStepData.w;
         rayDst += nextStepData.w;
+        it++;
     }
 }
