@@ -1,5 +1,6 @@
 ﻿#pragma kernel CSMain
 #include "./inc/SignedDistanceFunctions.cginc"
+#include "./inc/Transforms.cginc"
 
 static const int   MAX_ITERATIONS = 100;
 static const float MAX_DST        = 50;
@@ -27,10 +28,11 @@ struct Shape
     int      shapeType;
     int      blendType;
     float    blendStrength;
-    float2   torusR1R2;
+    float2   radii;
+    float3   position;
+    float3   rotation;
     float3   scale;
     float4   color;
-    float4x4 invTR;
 };
 
 int       _paintNormals;
@@ -77,15 +79,22 @@ Ray GetCameraRay(float2 pixelCoords)
 
 float GetShapeDistance(Shape shape, float3 eye)
 {
+  float3 p = Rotate(eye, shape.rotation);
   switch(shape.shapeType) {
     case 0:
-      return CubeDistance(eye, shape.invTR[3].xyz, shape.invTR, shape.scale);
+      return CubeDistance(p, shape.position, shape.scale);
       break;
     case 1:
-      return SphereDistance(eye, shape.invTR[3].xyz, shape.invTR, shape.scale.x);
+      return SphereDistance(p, shape.position, shape.radii.x);
       break;
     case 2:
-    return TorusDistance(eye, shape.invTR[3].xyz, shape.torusR1R2.x, shape.torusR1R2.y, shape.invTR);
+      return TorusDistance(p, shape.position, shape.radii.x, shape.radii.y);
+      break;
+    case 3:
+      return FloorPlaneDistance(p, shape.position.y);
+      break;
+    case 4:
+      return BackgroundPlaneDistance(p, shape.position.x);
       break;
     // TODO: Add more shapes
     default:
@@ -151,19 +160,30 @@ float3 ComputeNormal(float3 surfacePoint)
     return normalize(normal);
 }
 
-float ComputeShadow(float3 dirToLight, float3 surfacePoint, float3 normal)
+float ComputeShadow(float3 dirToLight, float dstToLight, float3 surfacePoint, float3 normal)
 {
     if (dot(normal, dirToLight)<0) return 0;
 
+    surfacePoint = surfacePoint + normal*SHADOW_BIAS;
+
+    float o = 1.0;
+
+    int it = 0;
     float dst = SHADOW_BIAS;
-    while (dst<MAX_DST)
+    while (dst<MAX_DST && dst<dstToLight)
     {
         float radius = GetColorAndRadius(surfacePoint + dirToLight*dst).w;
-        if (radius <= EPSILON) return _Ka;
+        if (radius <= EPSILON) {
+            o = 0;
+            break;
+        }
         
+        o = min(o, _Ksh*radius/dst);
+
         dst += radius;
+        it++;
     }
-    return 1.0;
+    return o + _Ka;
 }
 
 // Lights a surface point
@@ -177,7 +197,7 @@ float4 DoTheLighting(float3 surfacePoint, float3 baseColor)
     if (_paintNormals == 1) baseColor = normal;
 
     // Simple diffuse lighting (TODO: Improve lighting model)
-    float  dst2Light   = 0; 
+    float  dstToLight  = 0; 
     float  shadow      = 1;
     float  attByDst    = 0; 
     float3 dirToLight  = 0;
@@ -186,19 +206,19 @@ float4 DoTheLighting(float3 surfacePoint, float3 baseColor)
         if ( isinf(_lights[i].pos.x) || isinf(_lights[i].range))
         { // Directional lights
             dirToLight     = -_lights[i].dir;
-            dst2Light      = MAX_DST;
+            dstToLight      = MAX_DST;
             attByDst       = 0;
         }
         else
         {
-            dst2Light = distance(surfacePoint, _lights[i].pos);
-            if ( dst2Light > _lights[i].range) continue;
+            dstToLight = distance(surfacePoint, _lights[i].pos);
+            if ( dstToLight > _lights[i].range) continue;
 
             dirToLight = normalize(_lights[i].pos - surfacePoint);
-            attByDst = dst2Light/_lights[i].range; // Linear attenuation by distance // TODO: Curves?
+            attByDst = dstToLight/_lights[i].range; // Linear attenuation by distance // TODO: Curves?
         }
 
-        shadow = ComputeShadow(dirToLight, surfacePoint, normal);
+        shadow = ComputeShadow(dirToLight, dstToLight, surfacePoint, normal);
 
         finalColor += _lights[i].intensity * (1-attByDst) * shadow// Intensity 
                       * float4(baseColor,1) * _lights[i].color // Color

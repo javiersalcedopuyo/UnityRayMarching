@@ -17,12 +17,13 @@ public class RaymarchingManager : MonoBehaviour
     public int       shapeType;
     public int       blendType;
     public float     blendStrength;
-    public Vector2   torusRs;
+    public Vector2   radii;
+    public Vector3   position;
+    public Vector3   rotation;
     public Vector3   scale;
     public Vector4   color;
-    public Matrix4x4 TR;
 
-    public static int GetBytes() { return sizeof(int)*2 + sizeof(float)*(1 + 2 + 3 + 4 + 4*4); }
+    public static int GetBytes() { return sizeof(int)*2 + sizeof(float)*(1 + 2 + 3*3 + 4); }
   }
 
   struct LightStruct
@@ -152,10 +153,11 @@ public class RaymarchingManager : MonoBehaviour
       data[i].shapeType     = shapes[i].GetShapeType();
       data[i].blendType     = shapes[i].GetBlendType();
       data[i].blendStrength = shapes[i].GetBlendStrength();
-      data[i].torusRs       = shapes[i].GetTorusR1R2();
+      data[i].radii         = shapes[i].GetTorusR1R2();
+      data[i].position      = shapes[i].GetPos();
+      data[i].rotation      = shapes[i].GetRot();
       data[i].scale         = shapes[i].GetScale();
       data[i].color         = shapes[i].GetColor();
-      data[i].TR            = shapes[i].GetTRMat();
     }
 
     buffer.SetData(data);
