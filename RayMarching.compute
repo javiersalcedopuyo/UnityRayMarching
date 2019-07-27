@@ -2,10 +2,13 @@
 #include "./inc/SignedDistanceFunctions.cginc"
 #include "./inc/Transforms.cginc"
 
-static const int   MAX_ITERATIONS = 100;
-static const float MAX_DST        = 50;
-static const float EPSILON        = 0.001;
-static const float SHADOW_BIAS    = EPSILON * 50;
+static const int    MAX_ITERATIONS = 100;
+static const float  MAX_DST        = 50;
+static const float  EPSILON        = 0.001;
+static const float  SHADOW_BIAS    = EPSILON * 50;
+static const float3 EPSILON_X      = float3(EPSILON,0,0);
+static const float3 EPSILON_Y      = float3(0,EPSILON,0);
+static const float3 EPSILON_Z      = float3(0,0,EPSILON);
 
 struct Ray
 {
@@ -144,18 +147,18 @@ float4 GetColorAndRadius(float3 pointOfView)
 // Estimates the normal of a surface point
 float3 ComputeNormal(float3 surfacePoint)
 {
-    // To estimate the normal in an axis, from a surface point, we move slightly back and forth in
-    // that axis and get the changing in the distance to the surface itself.
+    // To estimate the normal in an axis, from a surface point, we move slightly in that axis and
+    // get the changing in the distance to the surface itself.
     // If the change is 0 or really small it means the surface doesn't change in that direction, so
     // its normal in that point won't have that axis component.
     float3 normal;
-    float3 epsilonX = float3(EPSILON,0,0);
-    float3 epsilonY = float3(0,EPSILON,0);
-    float3 epsilonZ = float3(0,0,EPSILON);
 
-    normal.x = GetColorAndRadius(surfacePoint+epsilonX).w - GetColorAndRadius(surfacePoint-epsilonX).w;
-    normal.y = GetColorAndRadius(surfacePoint+epsilonY).w - GetColorAndRadius(surfacePoint-epsilonY).w;
-    normal.z = GetColorAndRadius(surfacePoint+epsilonZ).w - GetColorAndRadius(surfacePoint-epsilonZ).w;
+
+    float3 reference = GetColorAndRadius(surfacePoint);
+
+    normal.x = GetColorAndRadius(surfacePoint+EPSILON_X).w - reference;
+    normal.y = GetColorAndRadius(surfacePoint+EPSILON_Y).w - reference;
+    normal.z = GetColorAndRadius(surfacePoint+EPSILON_Z).w - reference;
 
     return normalize(normal);
 }
